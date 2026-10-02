@@ -45,8 +45,8 @@
                   </strong>
                   <span>余票 {{ ticket.remainingStock }} · ¥{{ ticket.price.toFixed(2) }}</span>
                 </div>
-                <el-tag :type="ticket.status === 'ON_SALE' ? 'success' : 'warning'" effect="plain">
-                  {{ ticket.status === 'ON_SALE' ? '可预约' : '已售罄' }}
+                <el-tag :type="ticketStatusMeta(ticket.status).type" effect="plain">
+                  {{ ticketStatusMeta(ticket.status).label }}
                 </el-tag>
               </article>
             </div>
@@ -102,13 +102,12 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, onMounted, ref } from 'vue'
+import { nextTick, ref } from 'vue'
 import { Bot, Send, UserRound } from '@lucide/vue'
 
+import { sendAiMessageApi, type AiChatHistoryMessage } from '@/api/ai'
 import { useAuthStore } from '@/stores/auth'
-import { useTicketStore } from '@/stores/ticket'
-import type { Ticket } from '@/types/ticket'
-import { answerTicketQuestion } from '@/utils/ticketAssistant'
+import type { Ticket, TicketStatus } from '@/types/ticket'
 
 interface ChatMessage {
   id: number
@@ -118,7 +117,6 @@ interface ChatMessage {
 }
 
 const authStore = useAuthStore()
-const ticketStore = useTicketStore()
 const chatContainer = ref<HTMLElement>()
 const input = ref('')
 const sending = ref(false)
@@ -132,15 +130,10 @@ const messages = ref<ChatMessage[]>([
 ])
 
 const suggestions = [
-  '明天从人民广场到城市机场有哪些票？',
-  '中央火车站到城市机场有哪些车次？',
-  '后天从大学城到体育中心有哪些票？',
+  '明天从 Central Station 到 University 有哪些票？',
+  '从 Museum 到 Airport 有哪些车次？',
+  '后天从 University 到 Sports Center 有哪些票？',
 ]
-
-onMounted(async () => {
-  await ticketStore.loadReferenceData()
-  await ticketStore.loadTicketsForAssistant()
-})
 
 async function sendMessage(content = input.value): Promise<void> {
   const message = content.trim()
@@ -148,6 +141,11 @@ async function sendMessage(content = input.value): Promise<void> {
   if (!message || sending.value) {
     return
   }
+
+  const history: AiChatHistoryMessage[] = messages.value.map((message) => ({
+    role: message.role === 'USER' ? 'user' : 'assistant',
+    content: message.content,
+  }))
 
   messages.value.push({
     id: Date.now(),
@@ -160,19 +158,29 @@ async function sendMessage(content = input.value): Promise<void> {
   sending.value = true
   await scrollToBottom()
 
-  window.setTimeout(() => {
-    const result = answerTicketQuestion(message, ticketStore.tickets, ticketStore.stations)
+  try {
+    const result = await sendAiMessageApi({
+      message,
+      history,
+    })
 
     messages.value.push({
       id: Date.now() + 1,
       role: 'ASSISTANT',
-      content: result.content,
+      content: result.answer,
       tickets: result.tickets,
     })
-
+  } catch (error) {
+    messages.value.push({
+      id: Date.now() + 2,
+      role: 'ASSISTANT',
+      content: error instanceof Error ? error.message : 'AI 服务暂时不可用，请稍后重试。',
+      tickets: [],
+    })
+  } finally {
     sending.value = false
     void scrollToBottom()
-  }, 420)
+  }
 }
 
 async function scrollToBottom(): Promise<void> {
@@ -181,6 +189,23 @@ async function scrollToBottom(): Promise<void> {
     top: chatContainer.value.scrollHeight,
     behavior: 'smooth',
   })
+}
+
+function ticketStatusMeta(status: TicketStatus): {
+  label: string
+  type: 'success' | 'warning' | 'info' | 'danger'
+} {
+  const statusMap: Record<
+    TicketStatus,
+    { label: string; type: 'success' | 'warning' | 'info' | 'danger' }
+  > = {
+    DRAFT: { label: '草稿', type: 'info' },
+    ON_SALE: { label: '可预约', type: 'success' },
+    SOLD_OUT: { label: '已售罄', type: 'warning' },
+    CLOSED: { label: '已关闭', type: 'danger' },
+  }
+
+  return statusMap[status]
 }
 </script>
 
